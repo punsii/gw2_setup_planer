@@ -1,0 +1,6 @@
+.direnv
+.venv
+.vscode
+__pycache__
+result
+docs/superpowers
