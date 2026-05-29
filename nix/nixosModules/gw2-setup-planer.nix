@@ -81,6 +81,14 @@ in
           StateDirectory = "gw2-setup-planer";
           StateDirectoryMode = "0750";
           CacheDirectory = "gw2-setup-planer";
+          # nix run resolves its eval cache via $HOME/.cache/nix. Under
+          # DynamicUser $HOME defaults to /var/empty (read-only), so point
+          # it at the writable CacheDirectory instead. XDG_CACHE_HOME also
+          # set for any tool that prefers the XDG path.
+          Environment = [
+            "HOME=/var/cache/gw2-setup-planer"
+            "XDG_CACHE_HOME=/var/cache/gw2-setup-planer"
+          ];
         };
       };
     };
