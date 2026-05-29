@@ -69,7 +69,12 @@ in
         wantedBy = [ "multi-user.target" ];
         requires = [ "network-online.target" ];
         after = [ "network-online.target" ];
-        # serviceConfig = { };
+        # StateDirectory creates and chowns /var/lib/gw2-setup-planer for the
+        # service, where storage.py drops its default SQLite DB file.
+        serviceConfig = {
+          StateDirectory = "gw2-setup-planer";
+          StateDirectoryMode = "0750";
+        };
       };
     };
 
