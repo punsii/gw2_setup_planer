@@ -11,6 +11,10 @@ from pathlib import Path
 
 import streamlit as st
 
+import storage
+from models import PROFESSION_TO_SPECS as _MODELS_PROFESSION_TO_SPECS
+from models import Player, Role
+
 # ==================== DATA ====================
 
 TAG_OPTIONS: list[str] = [
@@ -23,17 +27,12 @@ TAG_OPTIONS: list[str] = [
     "Smoke",
 ]
 
-# Professions alphabetical; specs per profession: core spec first, then elites alphabetical.
+# String-typed view onto models.PROFESSION_TO_SPECS so the UI code keeps using
+# raw strings everywhere (selectbox options, dict lookups, session_state)
+# while models.py stays the enum-typed source of truth.
 PROFESSION_TO_SPECS: dict[str, list[str]] = {
-    "Elementalist": ["Elementalist", "Catalyst", "Evoker", "Tempest", "Weaver"],
-    "Engineer": ["Engineer", "Amalgam", "Holosmith", "Mechanist", "Scrapper"],
-    "Guardian": ["Guardian", "Dragonhunter", "Firebrand", "Luminary", "Willbender"],
-    "Mesmer": ["Mesmer", "Chronomancer", "Mirage", "Troubadour", "Virtuoso"],
-    "Necromancer": ["Necromancer", "Harbinger", "Reaper", "Ritualist", "Scourge"],
-    "Ranger": ["Ranger", "Druid", "Galeshot", "Soulbeast", "Untamed"],
-    "Revenant": ["Revenant", "Conduit", "Herald", "Renegade", "Vindicator"],
-    "Thief": ["Thief", "Antiquary", "Daredevil", "Deadeye", "Specter"],
-    "Warrior": ["Warrior", "Berserker", "Bladesworn", "Paragon", "Spellbreaker"],
+    prof.value: [spec.value for spec in specs]
+    for prof, specs in _MODELS_PROFESSION_TO_SPECS.items()
 }
 
 PROFESSIONS: list[str] = list(PROFESSION_TO_SPECS.keys())
@@ -256,7 +255,36 @@ DEFAULT_PLAYERS: dict[str, list[str]] = {
     ],
     "Lullu": ["Druid"],
     "Melow": ["Amalgam", "Heal Scrapper", "Paragon", "Druid"],
-    "MonkeyDLuis": sorted(DEFAULT_ROLES.keys()),
+    "MonkeyDLuis": [
+        "Amalgam",
+        "Core Necro",
+        "DPS Ele",
+        "DPS Luminary",
+        "DPS Scrapper",
+        "Daredevil",
+        "Dragonhunter",
+        "Druid",
+        "HFB",
+        "Heal Scrapper",
+        "Holosmith",
+        "Paragon",
+        "Reaper",
+        "Revenant",
+        "Ritualist",
+        "Soulbeast",
+        "Specter",
+        "Spellbreaker",
+        "Support Catalyst",
+        "Support Chrono",
+        "Support Harbinger",
+        "Support Luminary",
+        "Support Scourge",
+        "Support Tempest",
+        "Troubadour",
+        "Untamed",
+        "Virtuoso",
+        "Willbender",
+    ],
     "NappoLeo": ["Paragon"],
     "Punsi": ["DPS Ele", "Support Tempest", "Support Catalyst", "Paragon"],
     "Semtäx": [
@@ -508,7 +536,8 @@ def _role_sort_key(role_name: str) -> tuple[int, int, str]:
 
 
 def _rename_role_everywhere(old: str, new: str) -> None:
-    """Rename role key in roles dict, all player lists, and all setup spot state."""
+    """Rename role key in roles dict, all player lists, all setup spot state,
+    and persist the rename atomically in the DB."""
     if old == new:
         return
     st.session_state.roles[new] = st.session_state.roles.pop(old)
@@ -520,10 +549,14 @@ def _rename_role_everywhere(old: str, new: str) -> None:
         for c in range(NUM_COLS):
             if st.session_state.get(_role_key(r, c)) == old:
                 st.session_state[_role_key(r, c)] = new
+    try:
+        storage.rename_role(old, new)
+    except Exception as e:
+        st.toast(f"Role rename failed to persist: {e}", icon="⚠️")
 
 
 def _rename_player_everywhere(old: str, new: str) -> None:
-    """Rename player key in players dict and all setup spot state."""
+    """Rename player key in players dict, all setup spot state, and the DB."""
     if old == new:
         return
     st.session_state.players[new] = st.session_state.players.pop(old)
@@ -531,6 +564,41 @@ def _rename_player_everywhere(old: str, new: str) -> None:
         for c in range(NUM_COLS):
             if st.session_state.get(_player_key(r, c)) == old:
                 st.session_state[_player_key(r, c)] = new
+    try:
+        storage.rename_player(old, new)
+    except Exception as e:
+        st.toast(f"Player rename failed to persist: {e}", icon="⚠️")
+
+
+def _persist_role(name: str) -> None:
+    """Write the in-memory state of role `name` to the DB. If the role no
+    longer exists in session state, delete it from the DB instead."""
+    raw = st.session_state.roles.get(name)
+    try:
+        if raw is None:
+            storage.delete_role(name)
+            return
+        storage.upsert_role(
+            Role(
+                name=name,
+                profession=raw["profession"],
+                specialization=raw["specialization"],
+                tags=list(raw["tags"]),
+            )
+        )
+    except Exception as e:
+        st.toast(f"Role save failed: {e}", icon="⚠️")
+
+
+def _persist_player(name: str) -> None:
+    raw = st.session_state.players.get(name)
+    try:
+        if raw is None:
+            storage.delete_player(name)
+            return
+        storage.upsert_player(Player(name=name, role_priorities=list(raw)))
+    except Exception as e:
+        st.toast(f"Player save failed: {e}", icon="⚠️")
 
 
 # ---- Edit dialogs ----
@@ -664,15 +732,26 @@ def edit_role_dialog(role_name: str) -> None:
                     "tags": list(new_tags),
                 }
                 _rename_role_everywhere(role_name, new_name)
+                _persist_role(new_name)
+                # Saved: clear any pending-create marker (this role is now
+                # legitimately persisted).
+                st.session_state.pop("_pending_create_role", None)
                 _close_role_dialog()
                 st.rerun()
     with btn_cols[1]:
         if st.button("Delete", use_container_width=True, key="_role_delete"):
             del st.session_state.roles[role_name]
+            _persist_role(role_name)
+            st.session_state.pop("_pending_create_role", None)
             _close_role_dialog()
             st.rerun()
     with btn_cols[2]:
         if st.button("Cancel", use_container_width=True, key="_role_cancel"):
+            # If this dialog was opened by "+ Add role", the in-memory entry
+            # was never persisted; roll it back so we don't leave a phantom.
+            pending = st.session_state.pop("_pending_create_role", None)
+            if pending == role_name:
+                st.session_state.roles.pop(role_name, None)
             _close_role_dialog()
             st.rerun()
 
@@ -790,15 +869,22 @@ def edit_player_dialog(player_name: str) -> None:
                     st.session_state["_player_draft"]
                 )
                 _rename_player_everywhere(player_name, new_name)
+                _persist_player(new_name)
+                st.session_state.pop("_pending_create_player", None)
                 _close_player_dialog()
                 st.rerun()
     with btn_cols[1]:
         if st.button("Delete", use_container_width=True, key="_player_delete"):
             del st.session_state.players[player_name]
+            _persist_player(player_name)
+            st.session_state.pop("_pending_create_player", None)
             _close_player_dialog()
             st.rerun()
     with btn_cols[2]:
         if st.button("Cancel", use_container_width=True, key="_player_cancel"):
+            pending = st.session_state.pop("_pending_create_player", None)
+            if pending == player_name:
+                st.session_state.players.pop(player_name, None)
             _close_player_dialog()
             st.rerun()
 
@@ -905,11 +991,53 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Initialize mutable state once per session.
-if "roles" not in st.session_state:
-    st.session_state.roles = deepcopy(DEFAULT_ROLES)
-if "players" not in st.session_state:
-    st.session_state.players = deepcopy(DEFAULT_PLAYERS)
+# Initialize mutable state once per session, sourced from the DB.
+if "_db_initialised" not in st.session_state:
+    # Seed the DB with hardcoded defaults on first ever app launch.
+    seed_roles = {
+        name: Role(
+            name=name,
+            profession=raw["profession"],
+            specialization=raw["specialization"],
+            tags=list(raw["tags"]),
+        )
+        for name, raw in DEFAULT_ROLES.items()
+    }
+    seed_players = {
+        name: Player(name=name, role_priorities=list(raw))
+        for name, raw in DEFAULT_PLAYERS.items()
+    }
+    try:
+        storage.init_db(default_roles=seed_roles, default_players=seed_players)
+    except Exception as e:
+        st.error(f"Could not initialise database at {storage.db_path()}: {e}")
+    st.session_state["_db_initialised"] = True
+
+if "roles" not in st.session_state or "players" not in st.session_state:
+    try:
+        db_roles, db_players = storage.load_all()
+    except Exception as e:
+        st.error(f"Could not load from database: {e}; falling back to defaults.")
+        db_roles, db_players = {}, {}
+    if db_roles:
+        st.session_state.roles = {
+            name: {
+                "profession": role.profession.value,
+                "specialization": role.specialization.value,
+                "tags": [t.value for t in role.tags],
+            }
+            for name, role in db_roles.items()
+        }
+    else:
+        st.session_state.roles = deepcopy(DEFAULT_ROLES)
+    if db_players:
+        st.session_state.players = {
+            name: list(player.role_priorities)
+            for name, player in db_players.items()
+        }
+    else:
+        st.session_state.players = deepcopy(DEFAULT_PLAYERS)
+
 if "num_groups" not in st.session_state:
     st.session_state.num_groups = max(len(DEFAULT_SETUP), 1)
     for _r, _row in enumerate(DEFAULT_SETUP):
@@ -1161,6 +1289,7 @@ with _roles_mid:
                 use_container_width=True,
             ):
                 del st.session_state.roles[role_name]
+                _persist_role(role_name)
                 st.rerun()
 
     st.divider()
@@ -1171,6 +1300,9 @@ with _roles_mid:
             "specialization": PROFESSION_TO_SPECS[PROFESSIONS[0]][0],
             "tags": [],
         }
+        # Mark as pending: not yet persisted to DB. Save will commit,
+        # Cancel will roll back the in-memory entry.
+        st.session_state["_pending_create_role"] = new_name
         edit_role_dialog(new_name)
 
 
@@ -1244,10 +1376,12 @@ with _players_mid:
                 use_container_width=True,
             ):
                 del st.session_state.players[player_name]
+                _persist_player(player_name)
                 st.rerun()
 
     st.divider()
     if st.button("➕ Add player", key="add_player_btn"):
         new_name = _next_new_player_name()
         st.session_state.players[new_name] = []
+        st.session_state["_pending_create_player"] = new_name
         edit_player_dialog(new_name)
