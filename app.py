@@ -1,288 +1,471 @@
 """
-GW2 Squad Builder — initial single-file Streamlit prototype.
+GW2 Squad Builder — Streamlit prototype with Setup/Roles/Players tabs.
 
 Run with:
-    streamlit run gw2_squad_builder.py
+    streamlit run app.py
 """
+
+import base64
+from copy import deepcopy
+from pathlib import Path
 
 import streamlit as st
 
 # ==================== DATA ====================
 
-# Player preferences. Keyed by player.
-# Each value maps class -> priority (1 = strong main, 2 = secondary, higher = flex).
-# Within the same priority, players with fewer total classes ("one-tricks") sort first.
-PLAYERS: dict[str, dict[str, int]] = {
-    "Lullu": {"Druid": 1},
-    "NappoLeo": {"Paragon": 1},
-    "kfc": {"HFB / Firebrand": 1, "Paragon": 1},
-    # "Any DPS, Sup Trouba on Lead"
-    "Semtäx": {
-        "Troubadour": 1,
-        "Reaper": 2,
-        "Ritualist": 2,
-        "Amalgam": 2,
-        "Holosmith": 2,
-        "Untamed": 2,
-        "DPS Ele": 2,
-        "Virtuoso": 2,
-        "Spellbreaker": 2,
-        "Dragonhunter": 2,
-        "Willbender": 2,
-        "Soulbeast": 2,
-        "Daredevil": 2,
-        "DPS Scrapper": 2,
+TAG_OPTIONS: list[str] = [
+    "Stability",
+    "Heal",
+    "Boons",
+    "Cleanse",
+    "DPS",
+    "Strips",
+    "Smoke",
+]
+
+# Professions alphabetical; specs per profession: core spec first, then elites alphabetical.
+PROFESSION_TO_SPECS: dict[str, list[str]] = {
+    "Elementalist": ["Elementalist", "Catalyst", "Evoker", "Tempest", "Weaver"],
+    "Engineer": ["Engineer", "Amalgam", "Holosmith", "Mechanist", "Scrapper"],
+    "Guardian": ["Guardian", "Dragonhunter", "Firebrand", "Luminary", "Willbender"],
+    "Mesmer": ["Mesmer", "Chronomancer", "Mirage", "Troubadour", "Virtuoso"],
+    "Necromancer": ["Necromancer", "Harbinger", "Reaper", "Ritualist", "Scourge"],
+    "Ranger": ["Ranger", "Druid", "Galeshot", "Soulbeast", "Untamed"],
+    "Revenant": ["Revenant", "Conduit", "Herald", "Renegade", "Vindicator"],
+    "Thief": ["Thief", "Antiquary", "Daredevil", "Deadeye", "Specter"],
+    "Warrior": ["Warrior", "Berserker", "Bladesworn", "Paragon", "Spellbreaker"],
+}
+
+PROFESSIONS: list[str] = list(PROFESSION_TO_SPECS.keys())
+
+
+# Default roles. User edits/adds/removes these at runtime via the Roles tab.
+DEFAULT_ROLES: dict[str, dict] = {
+    "HFB": {
+        "profession": "Guardian",
+        "specialization": "Firebrand",
+        "tags": ["Stability", "Boons", "Cleanse"],
     },
-    # "FB/DH/Lumi Guardian, Mesmer (Virtuoso and chrono), Druid, support scrapper"
-    "Colmyllo Blanco": {
-        "HFB / Firebrand": 1,
-        "Dragonhunter": 1,
-        "Lumi": 1,
-        "Willbender": 1,
-        "Virtuoso": 2,
-        "Heal Chrono": 2,
-        "Druid": 3,
-        "Heal Scrapper": 3,
+    "Dragonhunter": {
+        "profession": "Guardian",
+        "specialization": "Dragonhunter",
+        "tags": ["DPS"],
     },
-    # Heal: Scrapper/Druid; Boon: Harb/Para; DPS: Amalgam/Holo; DPS+strip: Reaper/Core
-    "Suushi": {
-        "Heal Scrapper": 1,
-        "Druid": 1,
-        "Support Harbinger": 1,
-        "Paragon": 1,
-        "Amalgam": 1,
-        "Holosmith": 1,
-        "Reaper": 1,
-        "Core Necro": 1,
-        "Scourge": 2,
-        "DPS Scrapper": 2,
+    "Willbender": {
+        "profession": "Guardian",
+        "specialization": "Willbender",
+        "tags": ["DPS"],
     },
-    # "Amalgam/Scrapper + Support para + Druid"
-    "Melow": {
-        "Amalgam": 1,
-        "Heal Scrapper": 1,
-        "Paragon": 1,
-        "Druid": 1,
+    "Support Luminary": {
+        "profession": "Guardian",
+        "specialization": "Luminary",
+        "tags": ["Stability", "Cleanse"],
     },
-    # "Druid, Troubadour, Scrapper (heal), Specter [Mostly all heal, can also play tertiary - Para, Harbi, trouba]"
-    "Esskape": {
-        "Druid": 1,
-        "Troubadour": 1,
-        "Heal Scrapper": 1,
-        "Specter": 1,
-        "Paragon": 2,
-        "Support Harbinger": 2,
-        "Heal Chrono": 3,
-        "Support Catalyst": 3,
-        "Support Tempest": 3,
+    "DPS Luminary": {
+        "profession": "Guardian",
+        "specialization": "Luminary",
+        "tags": ["DPS"],
     },
-    # "SPB/paragon, untamed/druid/SB"
-    "daRetzaa": {
-        "Spellbreaker": 1,
-        "Paragon": 1,
-        "Untamed": 2,
-        "Druid": 2,
-        "Soulbeast": 2,
+    "Druid": {
+        "profession": "Ranger",
+        "specialization": "Druid",
+        "tags": ["Heal", "Cleanse", "Smoke"],
     },
-    # "Anything Ele (DPS or Support) / Supp Para"
-    "Punsi": {
-        "DPS Ele": 1,
-        "Support Tempest": 1,
-        "Support Catalyst": 1,
-        "Paragon": 2,
+    "Soulbeast": {
+        "profession": "Ranger",
+        "specialization": "Soulbeast",
+        "tags": ["DPS", "Smoke"],
     },
-    # "Stab HFB/Lumi, Support Para, Support Druid/Tempest, with some work dps untamed/Lumi"
-    "Viv": {
-        "HFB / Firebrand": 1,
-        "Lumi": 1,
-        "Paragon": 2,
-        "Druid": 3,
-        "Support Tempest": 3,
-        "Untamed": 4,
+    "Untamed": {
+        "profession": "Ranger",
+        "specialization": "Untamed",
+        "tags": ["DPS", "Strips", "Smoke"],
     },
-    # "Any Heal"
-    "Disturbed": {
-        "Druid": 2,
-        "Heal Scrapper": 2,
-        "Specter": 2,
-        "Troubadour": 2,
-        "Heal Chrono": 2,
-        "Support Tempest": 2,
-        "Support Catalyst": 2,
+    "Heal Scrapper": {
+        "profession": "Engineer",
+        "specialization": "Scrapper",
+        "tags": ["Heal", "Cleanse", "Smoke"],
     },
-    # "Want to try hard lumi dps, main is necro, can play everything but no HFB"
-    "Sif": {
-        "Lumi": 1,
-        "Reaper": 2,
-        "Scourge": 2,
-        "Core Necro": 2,
-        "Support Harbinger": 2,
-        "Ritualist": 2,
-        "Druid": 3,
-        "Paragon": 3,
-        "Troubadour": 3,
-        "Amalgam": 3,
-        "Holosmith": 3,
-        "DPS Scrapper": 3,
-        "Heal Scrapper": 3,
-        "Untamed": 3,
-        "Soulbeast": 3,
-        "DPS Ele": 3,
-        "Support Tempest": 3,
-        "Support Catalyst": 3,
-        "Virtuoso": 3,
-        "Heal Chrono": 3,
-        "Revenant": 3,
-        "Spellbreaker": 3,
-        "Dragonhunter": 3,
-        "Willbender": 3,
-        "Daredevil": 3,
-        "Specter": 3,
+    "DPS Scrapper": {
+        "profession": "Engineer",
+        "specialization": "Scrapper",
+        "tags": ["DPS", "Smoke"],
     },
-    # "Mainly DPS most exp on Ele, Engineer & Necro"
-    "Tim": {
-        "DPS Ele": 1,
-        "Amalgam": 1,
-        "Holosmith": 1,
-        "DPS Scrapper": 1,
-        "Reaper": 1,
-        "Core Necro": 1,
-        "Scourge": 1,
-        "Ritualist": 1,
-        "Untamed": 2,
-        "Virtuoso": 2,
-        "Spellbreaker": 2,
-        "Dragonhunter": 2,
-        "Willbender": 2,
-        "Soulbeast": 2,
-        "Daredevil": 2,
+    "Holosmith": {
+        "profession": "Engineer",
+        "specialization": "Holosmith",
+        "tags": ["DPS", "Smoke"],
     },
-    # "Druid most exp, paragon, supp spelly, Tempest, scrapper, trouba; no HFB GvG"
-    "Krataxx": {
-        "Druid": 1,
-        "Paragon": 2,
-        "Spellbreaker": 2,
-        "Support Tempest": 2,
-        "Heal Scrapper": 2,
-        "Troubadour": 2,
+    "Amalgam": {
+        "profession": "Engineer",
+        "specialization": "Amalgam",
+        "tags": ["DPS", "Smoke"],
     },
-    # Main necro line, Scrapper/Holo/Amalgam, then secondary, then learning
-    "Alex": {
-        "Core Necro": 1,
-        "Reaper": 1,
-        "Scourge": 1,
-        "Support Harbinger": 1,
-        "DPS Scrapper": 1,
-        "Heal Scrapper": 1,
-        "Holosmith": 1,
-        "Amalgam": 1,
-        "Revenant": 2,
-        "Virtuoso": 2,
-        "Daredevil": 2,
-        "Ritualist": 3,
-        "Untamed": 3,
-        "Spellbreaker": 3,
-        "Druid": 4,
+    "Core Necro": {
+        "profession": "Necromancer",
+        "specialization": "Necromancer",
+        "tags": ["DPS", "Strips"],
     },
-    # "Vindicator/Conduit/Renegade/Herald for any role (preferred); DPS: Untamed/WB/Holo/Virt/any Necro; Support: Chrono/Lumi/Druid/Scourge"
-    "Caradea": {
-        "Revenant": 1,
-        "Untamed": 2,
-        "Willbender": 2,
-        "Holosmith": 2,
-        "Virtuoso": 2,
-        "Reaper": 2,
-        "Core Necro": 2,
-        "Scourge": 2,
-        "Heal Chrono": 2,
-        "Lumi": 2,
-        "Druid": 2,
+    "Reaper": {
+        "profession": "Necromancer",
+        "specialization": "Reaper",
+        "tags": ["DPS", "Strips"],
     },
-    # "all, im the god xd" — full flex, all classes at low priority
-    "MonkeyDLuis": {
-        c: 5
-        for c in [
-            "Druid",
-            "Paragon",
-            "Troubadour",
-            "Lumi",
-            "HFB / Firebrand",
-            "Support Harbinger",
-            "Reaper",
-            "Scourge",
-            "Core Necro",
-            "Ritualist",
-            "Amalgam",
-            "Holosmith",
-            "Untamed",
-            "DPS Ele",
-            "Support Tempest",
-            "Support Catalyst",
-            "Virtuoso",
-            "Heal Chrono",
-            "Heal Scrapper",
-            "DPS Scrapper",
-            "Revenant",
-            "Spellbreaker",
-            "Dragonhunter",
-            "Willbender",
-            "Soulbeast",
-            "Daredevil",
-            "Specter",
-        ]
+    "Support Scourge": {
+        "profession": "Necromancer",
+        "specialization": "Scourge",
+        "tags": ["Heal", "Strips"],
+    },
+    "Support Harbinger": {
+        "profession": "Necromancer",
+        "specialization": "Harbinger",
+        "tags": ["Boons", "Strips"],
+    },
+    "Ritualist": {
+        "profession": "Necromancer",
+        "specialization": "Ritualist",
+        "tags": ["DPS", "Strips"],
+    },
+    "Spellbreaker": {
+        "profession": "Warrior",
+        "specialization": "Spellbreaker",
+        "tags": ["DPS", "Strips"],
+    },
+    "Paragon": {
+        "profession": "Warrior",
+        "specialization": "Paragon",
+        "tags": ["Heal", "Boons"],
+    },
+    "Troubadour": {
+        "profession": "Mesmer",
+        "specialization": "Troubadour",
+        "tags": ["Stability", "Heal", "Boons"],
+    },
+    "Virtuoso": {"profession": "Mesmer", "specialization": "Virtuoso", "tags": ["DPS"]},
+    "Support Chrono": {
+        "profession": "Mesmer",
+        "specialization": "Chronomancer",
+        "tags": ["Stability", "Heal", "Boons", "Strips"],
+    },
+    "DPS Ele": {
+        "profession": "Elementalist",
+        "specialization": "Elementalist",
+        "tags": ["DPS"],
+    },
+    "Support Tempest": {
+        "profession": "Elementalist",
+        "specialization": "Tempest",
+        "tags": ["Heal", "Cleanse"],
+    },
+    "Support Catalyst": {
+        "profession": "Elementalist",
+        "specialization": "Catalyst",
+        "tags": ["Cleanse", "Boons"],
+    },
+    "Revenant": {
+        "profession": "Revenant",
+        "specialization": "Revenant",
+        "tags": ["DPS"],
+    },
+    "Daredevil": {
+        "profession": "Thief",
+        "specialization": "Daredevil",
+        "tags": ["DPS", "Smoke"],
+    },
+    "Specter": {
+        "profession": "Thief",
+        "specialization": "Specter",
+        "tags": ["Heal", "Boons", "Smoke"],
     },
 }
 
 
-# Classes grouped roughly by profession for the dropdown.
-CLASSES: list[str] = [
-    # Guardian
-    "HFB / Firebrand",
-    "Dragonhunter",
-    "Willbender",
-    "Lumi",
-    # Ranger
-    "Druid",
-    "Soulbeast",
-    "Untamed",
-    # Engineer
-    "Heal Scrapper",
-    "DPS Scrapper",
-    "Holosmith",
-    "Amalgam",
-    # Necromancer
-    "Core Necro",
-    "Reaper",
-    "Scourge",
-    "Support Harbinger",
-    "Ritualist",
-    # Warrior
-    "Spellbreaker",
-    "Paragon",
-    # Mesmer
-    "Troubadour",
-    "Virtuoso",
-    "Heal Chrono",
-    # Elementalist
-    "DPS Ele",
-    "Support Tempest",
-    "Support Catalyst",
-    # Revenant
-    "Revenant",
-    # Thief
-    "Daredevil",
-    "Specter",
+# Default players. Ordered list of role names; index = priority (0 = primary).
+DEFAULT_PLAYERS: dict[str, list[str]] = {
+    "Alex": [
+        "Core Necro",
+        "Reaper",
+        "Support Scourge",
+        "Support Harbinger",
+        "DPS Scrapper",
+        "Heal Scrapper",
+        "Holosmith",
+        "Amalgam",
+        "Revenant",
+        "Virtuoso",
+        "Daredevil",
+        "Ritualist",
+        "Untamed",
+        "Spellbreaker",
+        "Druid",
+    ],
+    "Caradea": [
+        "Revenant",
+        "Untamed",
+        "Willbender",
+        "Holosmith",
+        "Virtuoso",
+        "Reaper",
+        "Core Necro",
+        "Support Scourge",
+        "Support Chrono",
+        "Support Luminary",
+        "Druid",
+    ],
+    "Colmyllo Blanco": [
+        "HFB",
+        "Dragonhunter",
+        "Support Luminary",
+        "Virtuoso",
+        "Support Chrono",
+        "Druid",
+        "Heal Scrapper",
+    ],
+    "daRetzaa": ["Spellbreaker", "Paragon", "Untamed", "Druid", "Soulbeast"],
+    "Disturbed": [
+        "Druid",
+        "Heal Scrapper",
+        "Specter",
+        "Troubadour",
+        "Support Chrono",
+        "Support Tempest",
+        "Support Catalyst",
+        "Daredevil",
+        "Paragon",
+        "Support Scourge",
+    ],
+    "Esskape": [
+        "Druid",
+        "Troubadour",
+        "Heal Scrapper",
+        "Specter",
+        "Paragon",
+        "Support Harbinger",
+        "Support Chrono",
+        "Support Catalyst",
+        "Support Tempest",
+    ],
+    "kfc": ["HFB", "Spellbreaker"],
+    "Krataxx": [
+        "Druid",
+        "Paragon",
+        "Spellbreaker",
+        "Support Tempest",
+        "Heal Scrapper",
+        "Troubadour",
+    ],
+    "Lullu": ["Druid"],
+    "Melow": ["Amalgam", "Heal Scrapper", "Paragon", "Druid"],
+    "MonkeyDLuis": sorted(DEFAULT_ROLES.keys()),
+    "NappoLeo": ["Paragon"],
+    "Punsi": ["DPS Ele", "Support Tempest", "Support Catalyst", "Paragon"],
+    "Semtäx": [
+        "Troubadour",
+        "Reaper",
+        "Ritualist",
+        "Amalgam",
+        "Holosmith",
+        "Untamed",
+        "DPS Ele",
+        "Virtuoso",
+        "Spellbreaker",
+        "Dragonhunter",
+        "Willbender",
+        "DPS Luminary",
+        "Soulbeast",
+        "Daredevil",
+        "DPS Scrapper",
+        "Core Necro",
+        "Revenant",
+    ],
+    "Fabz": ["Willbender"],
+    "Xeonix": [
+        "HFB",
+        "Support Luminary",
+        "DPS Luminary",
+        "Reaper",
+        "Support Scourge",
+        "Core Necro",
+        "Support Harbinger",
+        "Ritualist",
+        "Druid",
+        "Paragon",
+        "Troubadour",
+        "Amalgam",
+        "Holosmith",
+        "DPS Scrapper",
+        "Heal Scrapper",
+        "Untamed",
+        "Soulbeast",
+        "DPS Ele",
+        "Support Tempest",
+        "Support Catalyst",
+        "Virtuoso",
+        "Support Chrono",
+        "Revenant",
+        "Spellbreaker",
+        "Dragonhunter",
+        "Willbender",
+        "Daredevil",
+        "Specter",
+    ],
+    "Sif": [
+        "DPS Luminary",
+        "Reaper",
+        "Support Scourge",
+        "Core Necro",
+        "Support Harbinger",
+        "Ritualist",
+        "Druid",
+        "Paragon",
+        "Troubadour",
+        "Amalgam",
+        "Holosmith",
+        "DPS Scrapper",
+        "Heal Scrapper",
+        "Untamed",
+        "Soulbeast",
+        "DPS Ele",
+        "Support Tempest",
+        "Support Catalyst",
+        "Virtuoso",
+        "Support Chrono",
+        "Revenant",
+        "Spellbreaker",
+        "Dragonhunter",
+        "Willbender",
+        "Daredevil",
+        "Specter",
+    ],
+    "Suushi": [
+        "Heal Scrapper",
+        "Druid",
+        "Support Harbinger",
+        "Paragon",
+        "Amalgam",
+        "Holosmith",
+        "Reaper",
+        "Core Necro",
+        "Support Scourge",
+        "DPS Scrapper",
+    ],
+    "Tim": [
+        "DPS Ele",
+        "Amalgam",
+        "Holosmith",
+        "DPS Scrapper",
+        "Reaper",
+        "Core Necro",
+        "Ritualist",
+        "Untamed",
+        "Virtuoso",
+        "Spellbreaker",
+        "Dragonhunter",
+        "Willbender",
+        "Soulbeast",
+        "Daredevil",
+    ],
+    "Viv": [
+        "HFB",
+        "Support Luminary",
+        "Paragon",
+        "Druid",
+        "Support Tempest",
+        "Untamed",
+        "DPS Luminary",
+    ],
+}
+
+
+# Initial setup loaded on first session start: ordered grid of (role, player)
+# tuples. Outer list = groups (rows); inner list = spots within a group.
+DEFAULT_SETUP: list[list[tuple[str, str]]] = [
+    [
+        ("HFB", "Xeonix"),
+        ("Troubadour", "Esskape"),
+        ("Paragon", "Melow"),
+        ("Virtuoso", "Alex"),
+        ("Virtuoso", "Semtäx"),
+    ],
+    [
+        ("HFB", "Colmyllo Blanco"),
+        ("Specter", "Disturbed"),
+        ("Support Catalyst", "Punsi"),
+        ("Spellbreaker", "Sif"),
+        ("Willbender", "Fabz"),
+    ],
+    [
+        ("HFB", "Viv"),
+        ("Druid", "Lullu"),
+        ("Support Harbinger", "Suushi"),
+        ("Spellbreaker", "MonkeyDLuis"),
+        ("Untamed", "Caradea"),
+    ],
 ]
 
 
-# ==================== STATE / LOGIC ====================
-
-NUM_ROWS = 3
-NUM_COLS = 3
+ICON_DIR = Path(__file__).resolve().parent / "assets" / "icons"
 
 
-def _class_key(r: int, c: int) -> str:
-    return f"class_{r}_{c}"
+# ==================== HELPERS ====================
+
+NUM_COLS = 5
+MAX_GROUPS = 10
+
+# Default tag preselected in the role-picker dialog, per spot column.
+# Index = column 0..NUM_COLS-1. Falls back to "All" if out of range.
+COL_DEFAULT_TAGS: list[str] = ["Stability", "Heal", "Boons", "DPS", "DPS"]
+
+
+def _icon_path_for_spec(spec: str) -> Path | None:
+    if not spec:
+        return None
+    return ICON_DIR / f"{spec.capitalize()}_icon_small.png"
+
+
+def _icon_path_for_role(role_name: str) -> Path | None:
+    role = st.session_state.roles.get(role_name)
+    if not role:
+        return None
+    return _icon_path_for_spec(role["specialization"])
+
+
+@st.cache_data
+def _spec_data_url(spec: str) -> str:
+    """Base64 data URL for inline-HTML rendering."""
+    p = _icon_path_for_spec(spec)
+    if p is None or not p.exists():
+        return ""
+    b64 = base64.b64encode(p.read_bytes()).decode()
+    return f"data:image/png;base64,{b64}"
+
+
+def _role_data_url(role_name: str) -> str:
+    role = st.session_state.roles.get(role_name)
+    if not role:
+        return ""
+    return _spec_data_url(role["specialization"])
+
+
+def _discord_emoji_for_role(role_name: str) -> str:
+    role = st.session_state.roles.get(role_name)
+    if not role:
+        return ""
+    prof = role["profession"].lower()
+    spec = role["specialization"].lower()
+    return f":{prof}_{spec}:"
+
+
+def _truncate(s: str, n: int) -> str:
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _num_groups() -> int:
+    return st.session_state.get("num_groups", 3)
+
+
+def _role_key(r: int, c: int) -> str:
+    return f"role_{r}_{c}"
 
 
 def _player_key(r: int, c: int) -> str:
@@ -290,9 +473,8 @@ def _player_key(r: int, c: int) -> str:
 
 
 def _picked_players_except(my_spot: tuple[int, int]) -> set[str]:
-    """All players currently assigned to spots OTHER than `my_spot`."""
     picked: set[str] = set()
-    for r in range(NUM_ROWS):
+    for r in range(_num_groups()):
         for c in range(NUM_COLS):
             if (r, c) == my_spot:
                 continue
@@ -302,118 +484,770 @@ def _picked_players_except(my_spot: tuple[int, int]) -> set[str]:
     return picked
 
 
-def candidates_for(cls: str, my_spot: tuple[int, int]) -> list[str]:
-    """Available players for `cls`, sorted by (priority asc, total classes asc, name asc).
-
-    Players already assigned to a different spot are excluded.
-    """
+def candidates_for(role_name: str, my_spot: tuple[int, int]) -> list[str]:
+    """Players who have role_name, sorted by (position in their list, total roles, name)."""
     taken = _picked_players_except(my_spot)
     rows: list[tuple[int, int, str]] = []
-    for player, class_map in PLAYERS.items():
-        if cls not in class_map or player in taken:
+    for player, roles in st.session_state.players.items():
+        if role_name not in roles or player in taken:
             continue
-        priority = class_map[cls]
-        total = len(class_map)
-        rows.append((priority, total, player))
+        rows.append((roles.index(role_name), len(roles), player))
     rows.sort()
     return [name for _, _, name in rows]
 
 
-def _on_class_changed(r: int, c: int) -> None:
-    """When the class for a spot changes, clear that spot's player."""
-    st.session_state[_player_key(r, c)] = ""
+def _role_sort_key(role_name: str) -> tuple[int, int, str]:
+    """Sort roles by (profession order, spec order, role name)."""
+    role = st.session_state.roles.get(role_name, {})
+    prof = role.get("profession", "")
+    spec = role.get("specialization", "")
+    prof_idx = PROFESSIONS.index(prof) if prof in PROFESSIONS else len(PROFESSIONS)
+    specs = PROFESSION_TO_SPECS.get(prof, [])
+    spec_idx = specs.index(spec) if spec in specs else len(specs)
+    return (prof_idx, spec_idx, role_name)
+
+
+def _rename_role_everywhere(old: str, new: str) -> None:
+    """Rename role key in roles dict, all player lists, and all setup spot state."""
+    if old == new:
+        return
+    st.session_state.roles[new] = st.session_state.roles.pop(old)
+    for player_roles in st.session_state.players.values():
+        for i, r in enumerate(player_roles):
+            if r == old:
+                player_roles[i] = new
+    for r in range(MAX_GROUPS):
+        for c in range(NUM_COLS):
+            if st.session_state.get(_role_key(r, c)) == old:
+                st.session_state[_role_key(r, c)] = new
+
+
+def _rename_player_everywhere(old: str, new: str) -> None:
+    """Rename player key in players dict and all setup spot state."""
+    if old == new:
+        return
+    st.session_state.players[new] = st.session_state.players.pop(old)
+    for r in range(MAX_GROUPS):
+        for c in range(NUM_COLS):
+            if st.session_state.get(_player_key(r, c)) == old:
+                st.session_state[_player_key(r, c)] = new
+
+
+# ---- Edit dialogs ----
+
+_ROLE_DRAFT_KEYS = (
+    "_role_draft",
+    "_role_draft_for",
+    "_role_dlg_name",
+    "_role_dlg_prof",
+    "_role_dlg_spec",
+    "_role_dlg_tags",
+)
+_PLAYER_DRAFT_KEYS = (
+    "_player_draft",
+    "_player_draft_for",
+    "_player_dlg_name",
+    "_player_add_pick",
+    "_player_add_custom",
+)
+
+
+def _close_role_dialog() -> None:
+    for k in _ROLE_DRAFT_KEYS:
+        if k in st.session_state:
+            del st.session_state[k]
+
+
+def _close_player_dialog() -> None:
+    for k in _PLAYER_DRAFT_KEYS:
+        if k in st.session_state:
+            del st.session_state[k]
+
+
+def _next_new_player_name() -> str:
+    n = 1
+    while f"New player {n}" in st.session_state.players:
+        n += 1
+    return f"New player {n}"
+
+
+def _next_new_role_name() -> str:
+    n = 1
+    while f"New role {n}" in st.session_state.roles:
+        n += 1
+    return f"New role {n}"
+
+
+@st.dialog("Edit role", width="large")
+def edit_role_dialog(role_name: str) -> None:
+    # Lazy-init draft tied to this specific role; reset if user switched roles.
+    if st.session_state.get("_role_draft_for") != role_name:
+        st.session_state["_role_draft_for"] = role_name
+        st.session_state["_role_draft"] = {
+            "profession": st.session_state.roles[role_name]["profession"],
+            "specialization": st.session_state.roles[role_name]["specialization"],
+        }
+        for k in (
+            "_role_dlg_name",
+            "_role_dlg_prof",
+            "_role_dlg_spec",
+            "_role_dlg_tags",
+        ):
+            if k in st.session_state:
+                del st.session_state[k]
+
+    role = st.session_state.roles[role_name]
+    draft = st.session_state["_role_draft"]
+
+    new_name = st.text_input("Name", value=role_name, key="_role_dlg_name").strip()
+
+    cols = st.columns(2)
+    with cols[0]:
+        prof_index = (
+            PROFESSIONS.index(draft["profession"])
+            if draft["profession"] in PROFESSIONS
+            else 0
+        )
+        new_prof = st.selectbox(
+            "Profession",
+            options=PROFESSIONS,
+            index=prof_index,
+            key="_role_dlg_prof",
+        )
+        # On prof change snap spec to first of new profession; no explicit rerun
+        # — st.rerun() inside a dialog closes it.
+        if new_prof != draft["profession"]:
+            draft["profession"] = new_prof
+            draft["specialization"] = PROFESSION_TO_SPECS[new_prof][0]
+            if "_role_dlg_spec" in st.session_state:
+                del st.session_state["_role_dlg_spec"]
+    with cols[1]:
+        specs = PROFESSION_TO_SPECS[new_prof]
+        spec_index = (
+            specs.index(draft["specialization"])
+            if draft["specialization"] in specs
+            else 0
+        )
+        new_spec = st.selectbox(
+            "Specialization",
+            options=specs,
+            index=spec_index,
+            key="_role_dlg_spec",
+        )
+        draft["specialization"] = new_spec
+
+    new_tags = st.multiselect(
+        "Tags",
+        options=TAG_OPTIONS,
+        default=role["tags"],
+        key="_role_dlg_tags",
+    )
+
+    icon_path = _icon_path_for_spec(new_spec)
+    if icon_path and icon_path.exists():
+        st.image(str(icon_path), width=72)
+
+    st.divider()
+    btn_cols = st.columns(3)
+    with btn_cols[0]:
+        if st.button(
+            "Save", type="primary", use_container_width=True, key="_role_save"
+        ):
+            if not new_name:
+                st.error("Name is required.")
+            elif new_name != role_name and new_name in st.session_state.roles:
+                st.error(f"Role '{new_name}' already exists.")
+            else:
+                st.session_state.roles[role_name] = {
+                    "profession": new_prof,
+                    "specialization": new_spec,
+                    "tags": list(new_tags),
+                }
+                _rename_role_everywhere(role_name, new_name)
+                _close_role_dialog()
+                st.rerun()
+    with btn_cols[1]:
+        if st.button("Delete", use_container_width=True, key="_role_delete"):
+            del st.session_state.roles[role_name]
+            _close_role_dialog()
+            st.rerun()
+    with btn_cols[2]:
+        if st.button("Cancel", use_container_width=True, key="_role_cancel"):
+            _close_role_dialog()
+            st.rerun()
+
+
+@st.fragment
+def _player_roles_fragment() -> None:
+    """Rendered inside edit_player_dialog. Lives in a fragment so list
+    reorder/add/remove buttons rerun ONLY the fragment (st.rerun closes
+    dialogs unless scoped to the fragment)."""
+    draft_roles: list[str] = st.session_state["_player_draft"]
+
+    st.markdown("**Roles** — top to bottom = highest to lowest priority")
+
+    for i, rn in enumerate(draft_roles):
+        line_cols = st.columns([1, 1, 1, 2, 9])
+        with line_cols[0]:
+            if st.button(
+                "↑",
+                key=f"_p_up_{i}",
+                disabled=(i == 0),
+                use_container_width=True,
+            ):
+                draft_roles[i - 1], draft_roles[i] = (
+                    draft_roles[i],
+                    draft_roles[i - 1],
+                )
+                st.rerun(scope="fragment")
+        with line_cols[1]:
+            if st.button(
+                "↓",
+                key=f"_p_down_{i}",
+                disabled=(i == len(draft_roles) - 1),
+                use_container_width=True,
+            ):
+                draft_roles[i + 1], draft_roles[i] = (
+                    draft_roles[i],
+                    draft_roles[i + 1],
+                )
+                st.rerun(scope="fragment")
+        with line_cols[2]:
+            if st.button(
+                "✗",
+                key=f"_p_del_{i}",
+                use_container_width=True,
+            ):
+                draft_roles.pop(i)
+                st.rerun(scope="fragment")
+        with line_cols[3]:
+            icon_path = _icon_path_for_role(rn)
+            if icon_path and icon_path.exists():
+                st.image(str(icon_path), width=54)
+        with line_cols[4]:
+            st.markdown(f"**{i + 1}.** {rn}")
+
+    known_roles = sorted(st.session_state.roles.keys(), key=_role_sort_key)
+    unused = [rn for rn in known_roles if rn not in draft_roles]
+    add_cols = st.columns([5, 5, 1])
+    with add_cols[0]:
+        pick = st.selectbox(
+            "Add known role",
+            options=[""] + unused,
+            key="_player_add_pick",
+            label_visibility="collapsed",
+            placeholder="Pick from known roles…",
+        )
+    with add_cols[1]:
+        custom = st.text_input(
+            "Custom role",
+            key="_player_add_custom",
+            label_visibility="collapsed",
+            placeholder="Or type a custom role…",
+        )
+    with add_cols[2]:
+        custom_trim = custom.strip()
+        to_add = custom_trim or pick
+        if st.button(
+            "+",
+            key="_player_add_btn",
+            disabled=not to_add or to_add in draft_roles,
+            use_container_width=True,
+        ):
+            draft_roles.append(to_add)
+            for k in ("_player_add_pick", "_player_add_custom"):
+                if k in st.session_state:
+                    del st.session_state[k]
+            st.rerun(scope="fragment")
+
+
+@st.dialog("Edit player", width="large")
+def edit_player_dialog(player_name: str) -> None:
+    # Lazy-init draft tied to this specific player.
+    if st.session_state.get("_player_draft_for") != player_name:
+        st.session_state["_player_draft_for"] = player_name
+        st.session_state["_player_draft"] = list(st.session_state.players[player_name])
+        for k in ("_player_dlg_name", "_player_add_pick", "_player_add_custom"):
+            if k in st.session_state:
+                del st.session_state[k]
+
+    new_name = st.text_input("Name", value=player_name, key="_player_dlg_name").strip()
+
+    _player_roles_fragment()
+
+    st.divider()
+    btn_cols = st.columns(3)
+    with btn_cols[0]:
+        if st.button(
+            "Save", type="primary", use_container_width=True, key="_player_save"
+        ):
+            if not new_name:
+                st.error("Name is required.")
+            elif new_name != player_name and new_name in st.session_state.players:
+                st.error(f"Player '{new_name}' already exists.")
+            else:
+                st.session_state.players[player_name] = list(
+                    st.session_state["_player_draft"]
+                )
+                _rename_player_everywhere(player_name, new_name)
+                _close_player_dialog()
+                st.rerun()
+    with btn_cols[1]:
+        if st.button("Delete", use_container_width=True, key="_player_delete"):
+            del st.session_state.players[player_name]
+            _close_player_dialog()
+            st.rerun()
+    with btn_cols[2]:
+        if st.button("Cancel", use_container_width=True, key="_player_cancel"):
+            _close_player_dialog()
+            st.rerun()
+
+
+@st.fragment
+def _pick_role_fragment(r: int, c: int) -> None:
+    """Body of the pick_role_dialog. Wrapped in a fragment so tag clicks
+    rerun ONLY this fragment (highlight catches up immediately without
+    closing the surrounding dialog)."""
+    rk = _role_key(r, c)
+    pk = _player_key(r, c)
+    active_tag_key = f"_active_role_tag_{r}_{c}"
+    if active_tag_key not in st.session_state:
+        st.session_state[active_tag_key] = (
+            COL_DEFAULT_TAGS[c] if c < len(COL_DEFAULT_TAGS) else "All"
+        )
+
+    active_tag = st.session_state[active_tag_key]
+
+    cols = st.columns([1, 3], gap="small")
+    with cols[0]:
+        st.markdown("**Tags**")
+        for t in ["All"] + TAG_OPTIONS:
+            btn_type = "primary" if t == active_tag else "secondary"
+            if st.button(
+                t,
+                key=f"_pr_tag_{r}_{c}_{t}",
+                use_container_width=True,
+                type=btn_type,
+            ):
+                st.session_state[active_tag_key] = t
+                # Fragment-scoped rerun: dialog stays open, highlight refreshes.
+                st.rerun(scope="fragment")
+
+    role_names_all = sorted(st.session_state.roles.keys(), key=_role_sort_key)
+    if active_tag == "All":
+        filtered = role_names_all
+    else:
+        filtered = [
+            rn
+            for rn in role_names_all
+            if active_tag in st.session_state.roles[rn]["tags"]
+        ]
+
+    with cols[1]:
+        st.markdown(f"**Roles — {active_tag}**")
+        if not filtered:
+            st.caption("No roles match this tag.")
+        for rn in filtered:
+            sub = st.columns([1, 9], gap="small")
+            with sub[0]:
+                p = _icon_path_for_role(rn)
+                if p and p.exists():
+                    st.image(str(p), width=28)
+            with sub[1]:
+                if st.button(
+                    rn,
+                    key=f"_pr_role_{r}_{c}_{rn}",
+                    use_container_width=True,
+                ):
+                    if st.session_state.get(rk) != rn:
+                        st.session_state[rk] = rn
+                        st.session_state[pk] = ""
+                    if active_tag_key in st.session_state:
+                        del st.session_state[active_tag_key]
+                    # Full rerun closes the dialog.
+                    st.rerun()
+
+    st.divider()
+    bcols = st.columns(2)
+    with bcols[0]:
+        if st.session_state.get(rk):
+            if st.button(
+                "✗ Clear role",
+                key=f"_pr_clear_{r}_{c}",
+                use_container_width=True,
+            ):
+                st.session_state[rk] = ""
+                st.session_state[pk] = ""
+                if active_tag_key in st.session_state:
+                    del st.session_state[active_tag_key]
+                st.rerun()
+    with bcols[1]:
+        if st.button(
+            "Cancel",
+            key=f"_pr_cancel_{r}_{c}",
+            use_container_width=True,
+        ):
+            if active_tag_key in st.session_state:
+                del st.session_state[active_tag_key]
+            st.rerun()
+
+
+@st.dialog("Pick a role", width="small")
+def pick_role_dialog(r: int, c: int) -> None:
+    _pick_role_fragment(r, c)
 
 
 # ==================== UI ====================
 
-st.set_page_config(page_title="GW2 Squad Builder", layout="wide")
-st.title("GW2 Squad Builder")
-st.caption(
-    "Pick a class for each spot. The number next to the class is how many players "
-    "can still fill that role given current picks. Click it to assign a player."
+st.set_page_config(
+    page_title="GW2 Squad Builder",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-# --- Reset button -------------------------------------------------------------
-if st.button("Reset all spots"):
-    for r in range(NUM_ROWS):
-        for c in range(NUM_COLS):
-            st.session_state[_class_key(r, c)] = ""
-            st.session_state[_player_key(r, c)] = ""
-    st.rerun()
+# Initialize mutable state once per session.
+if "roles" not in st.session_state:
+    st.session_state.roles = deepcopy(DEFAULT_ROLES)
+if "players" not in st.session_state:
+    st.session_state.players = deepcopy(DEFAULT_PLAYERS)
+if "num_groups" not in st.session_state:
+    st.session_state.num_groups = max(len(DEFAULT_SETUP), 1)
+    for _r, _row in enumerate(DEFAULT_SETUP):
+        for _c, (_role, _player) in enumerate(_row[:NUM_COLS]):
+            st.session_state[_role_key(_r, _c)] = _role
+            st.session_state[_player_key(_r, _c)] = _player
 
-# --- Spot grid ----------------------------------------------------------------
-for r in range(NUM_ROWS):
-    cols = st.columns(NUM_COLS)
-    for c, col in enumerate(cols):
-        with col:
-            with st.container(border=True):
-                ck = _class_key(r, c)
-                pk = _player_key(r, c)
+st.title("GW2 Squad Builder")
 
-                st.markdown(f"**Spot {r + 1}.{c + 1}**")
-
-                cls = st.selectbox(
-                    "Class",
-                    options=[""] + CLASSES,
-                    key=ck,
-                    on_change=_on_class_changed,
-                    args=(r, c),
-                    label_visibility="collapsed",
-                    placeholder="Choose a class…",
+# Process any pending group mutation BEFORE widgets render this run.
+# (Direct st.session_state writes to widget keys after widget instantiation
+# raise StreamlitAPIException — so delete/add buttons defer the shift to the
+# next run via this pending-action pattern.)
+_pending = st.session_state.pop("_grp_pending", None)
+if _pending:
+    _action, _idx = _pending
+    _n = st.session_state["num_groups"]
+    if _action == "delete":
+        for _rr in range(_idx, _n - 1):
+            for _cc in range(NUM_COLS):
+                st.session_state[_role_key(_rr, _cc)] = st.session_state.get(
+                    _role_key(_rr + 1, _cc), ""
                 )
+                st.session_state[_player_key(_rr, _cc)] = st.session_state.get(
+                    _player_key(_rr + 1, _cc), ""
+                )
+        for _cc in range(NUM_COLS):
+            st.session_state.pop(_role_key(_n - 1, _cc), None)
+            st.session_state.pop(_player_key(_n - 1, _cc), None)
+        st.session_state["num_groups"] = _n - 1
+    elif _action == "add":
+        for _rr in range(_n, _idx + 1, -1):
+            for _cc in range(NUM_COLS):
+                st.session_state[_role_key(_rr, _cc)] = st.session_state.get(
+                    _role_key(_rr - 1, _cc), ""
+                )
+                st.session_state[_player_key(_rr, _cc)] = st.session_state.get(
+                    _player_key(_rr - 1, _cc), ""
+                )
+        for _cc in range(NUM_COLS):
+            st.session_state[_role_key(_idx + 1, _cc)] = ""
+            st.session_state[_player_key(_idx + 1, _cc)] = ""
+        st.session_state["num_groups"] = _n + 1
 
-                if not cls:
-                    st.caption("— no class picked —")
-                    continue
+num_groups = _num_groups()
 
-                available = candidates_for(cls, (r, c))
+tab_setup, tab_roles, tab_players = st.tabs(["Setup", "Roles", "Players"])
 
-                # If the player previously assigned here is no longer in the
-                # candidate list (e.g. assigned to another spot in the meantime),
-                # clear before rendering the picker.
-                current_player = st.session_state.get(pk, "")
-                if current_player and current_player not in available:
-                    st.session_state[pk] = ""
-                    current_player = ""
 
-                name_col, badge_col = st.columns([3, 1])
-                with name_col:
-                    st.markdown(f"### {cls}")
-                    if current_player:
-                        st.markdown(f"👤 **{current_player}**")
-                    else:
-                        st.caption("no player assigned")
-                with badge_col:
-                    # The "click the number → dropdown opens" interaction.
-                    with st.popover(
-                        f"{len(available)}",
-                        use_container_width=True,
-                        help=f"{len(available)} player(s) can run {cls}",
-                    ):
-                        st.caption(f"Players who can run **{cls}**")
-                        st.selectbox(
-                            "Pick player",
-                            options=[""] + available,
-                            key=pk,
-                            label_visibility="collapsed",
+# ---------- Setup tab ----------
+with tab_setup:
+    role_names_sorted = sorted(st.session_state.roles.keys(), key=_role_sort_key)
+
+    GROUP_LABEL_WEIGHT = 1
+    SPOT_WEIGHT = 4
+    for r in range(num_groups):
+        row_cols = st.columns([SPOT_WEIGHT] * NUM_COLS + [GROUP_LABEL_WEIGHT])
+        for c in range(NUM_COLS):
+            with row_cols[c]:
+                with st.container(border=True):
+                    rk = _role_key(r, c)
+                    pk = _player_key(r, c)
+
+                    # Drop stale role reference (role may have been deleted).
+                    stale_role = st.session_state.get(rk, "")
+                    if stale_role and stale_role not in st.session_state.roles:
+                        st.session_state[rk] = ""
+
+                    role = st.session_state.get(rk, "")
+                    available = candidates_for(role, (r, c)) if role else []
+
+                    current_player = st.session_state.get(pk, "")
+                    if current_player and current_player not in available:
+                        st.session_state[pk] = ""
+                        current_player = ""
+
+                    # Row 1: clickable opener for the role-picker dialog.
+                    # When a role is set: HTML strip [icon + name + count] plus
+                    # a small Material edit icon button on the right. When no
+                    # role: a single borderless ("tertiary") button styled like
+                    # the previous "No role" placeholder.
+                    if role:
+                        url = _role_data_url(role)
+                        # Count of OTHER options: total candidates minus self
+                        # if a player is currently assigned to this spot.
+                        other_count = len(available) - (1 if current_player else 0)
+                        count_html = (
+                            "<span style='margin-left:auto;color:#888;"
+                            f"font-size:0.85em;'>{other_count} avail</span>"
                         )
+                        if url:
+                            row_html = (
+                                "<div style='display:flex;align-items:center;"
+                                "height:40px;'>"
+                                f"<img src='{url}' style='width:36px;height:36px;"
+                                "margin-right:8px;'>"
+                                "<span style='font-weight:600;font-size:1.05em;'>"
+                                f"{_truncate(role, 18)}</span>"
+                                f"{count_html}"
+                                "</div>"
+                            )
+                        else:
+                            row_html = (
+                                "<div style='display:flex;align-items:center;"
+                                "height:40px;'>"
+                                "<span style='font-weight:600;font-size:1.05em;'>"
+                                f"{_truncate(role, 18)}</span>"
+                                f"{count_html}"
+                                "</div>"
+                            )
+                        head_cols = st.columns([8, 1], gap="small")
+                        with head_cols[0]:
+                            st.markdown(row_html, unsafe_allow_html=True)
+                        with head_cols[1]:
+                            if st.button(
+                                "",
+                                icon=":material/edit:",
+                                key=f"_open_role_dlg_{r}_{c}",
+                                help="Change role",
+                                type="tertiary",
+                                use_container_width=True,
+                            ):
+                                pick_role_dialog(r, c)
+                    else:
+                        if st.button(
+                            "Pick a role…",
+                            key=f"_open_role_dlg_{r}_{c}",
+                            type="secondary",
+                        ):
+                            pick_role_dialog(r, c)
 
-# --- Summary ------------------------------------------------------------------
-st.divider()
-st.subheader("Current setup")
+                    # Row 2: player selectbox (single-line dropdown).
+                    st.selectbox(
+                        "Player",
+                        options=[""] + available,
+                        key=pk,
+                        label_visibility="collapsed",
+                        placeholder=(
+                            f"Pick from {len(available)} player(s)"
+                            if role
+                            else "(no role yet)"
+                        ),
+                        disabled=not role,
+                        format_func=lambda x: _truncate(x, 20) if x else "—",
+                    )
+        with row_cols[NUM_COLS]:
+            st.markdown(f"**Group {r + 1}**")
+            grp_btns = st.columns(2, gap="small")
+            with grp_btns[0]:
+                if st.button(
+                    "",
+                    icon=":material/delete:",
+                    type="tertiary",
+                    help="Delete this group",
+                    key=f"_del_grp_{r}",
+                    disabled=num_groups <= 1,
+                ):
+                    st.session_state["_grp_pending"] = ("delete", r)
+                    st.rerun()
+            with grp_btns[1]:
+                if st.button(
+                    "",
+                    icon=":material/add:",
+                    type="tertiary",
+                    help="Add a new group below this one",
+                    key=f"_add_grp_{r}",
+                    disabled=num_groups >= MAX_GROUPS,
+                ):
+                    st.session_state["_grp_pending"] = ("add", r)
+                    st.rerun()
 
-summary_lines: list[str] = []
-for r in range(NUM_ROWS):
-    row_items: list[str] = []
-    for c in range(NUM_COLS):
-        cls = st.session_state.get(_class_key(r, c), "")
-        ply = st.session_state.get(_player_key(r, c), "")
-        if cls and ply:
-            row_items.append(f"{ply:<16} {cls}")
-        elif cls:
-            row_items.append(f"{'(empty)':<16} {cls}")
-        else:
-            row_items.append(f"{'—':<16} {'—'}")
-    summary_lines.append("   |   ".join(row_items))
+    st.divider()
+    st.subheader("Copy/paste for Discord")
 
-st.code("\n".join(summary_lines), language="text")
+    # Per-column padding: longest visible string in each column. Spec emoji
+    # (`:profession_spec:`) renders as 1 char in Discord by definition, so we
+    # don't include its length in the padding calculation.
+    col_widths = [0] * NUM_COLS
+    cell_data: list[list[tuple[str, str]]] = []
+    for r in range(num_groups):
+        row_cells: list[tuple[str, str]] = []
+        for c in range(NUM_COLS):
+            role_str_val = st.session_state.get(_role_key(r, c), "")
+            ply = st.session_state.get(_player_key(r, c), "")
+            cls_str = _discord_emoji_for_role(role_str_val) if role_str_val else "—"
+            if ply:
+                ply_str = _truncate(ply, 20)
+            else:
+                ply_str = "-unassigned-" if role_str_val else "—"
+            row_cells.append((ply_str, cls_str))
+            col_widths[c] = max(col_widths[c], len(ply_str))
+        cell_data.append(row_cells)
+
+    summary_lines: list[str] = []
+    for row_cells in cell_data:
+        row_items: list[str] = []
+        for c, (ply_str, cls_str) in enumerate(row_cells):
+            # Wrap padded player names in backticks so Discord renders them
+            # as monospaced inline code (its default font is proportional).
+            row_items.append(f"{cls_str}`{ply_str.ljust(col_widths[c])}`")
+        summary_lines.append(" | ".join(row_items))
+
+    # Leading zero-width space + newline so Discord pastes start on a fresh
+    # line. Streamlit's st.code strips plain leading whitespace, but ZWSP
+    # (U+200B) is not whitespace and survives, anchoring the newline.
+    st.code("​\n" + "\n".join(summary_lines), language="text")
+
+
+# ---------- Roles tab ----------
+with tab_roles:
+    _, _roles_mid, _ = st.columns([1, 3, 1])
+
+with _roles_mid:
+    st.caption(
+        "Click Edit to change a role in a popup. "
+        "Profession determines which specializations are available. "
+        "Tags describe what a role can contribute to a group."
+    )
+
+    for role_name in sorted(st.session_state.roles.keys(), key=_role_sort_key):
+        role = st.session_state.roles[role_name]
+        icon_path = _icon_path_for_spec(role["specialization"])
+
+        outer_cols = st.columns([1, 6, 8, 1, 1])
+        with outer_cols[0]:
+            if icon_path and icon_path.exists():
+                st.image(str(icon_path), width=40)
+        with outer_cols[1]:
+            st.markdown(f"**{role_name}**")
+        with outer_cols[2]:
+            st.caption(", ".join(role["tags"]) if role["tags"] else "—")
+        with outer_cols[3]:
+            if st.button(
+                "",
+                icon=":material/edit:",
+                key=f"edit_role_btn_{role_name}",
+                type="tertiary",
+                help="Edit role",
+                use_container_width=True,
+            ):
+                edit_role_dialog(role_name)
+        with outer_cols[4]:
+            if st.button(
+                "",
+                icon=":material/delete:",
+                key=f"del_role_inline_{role_name}",
+                type="tertiary",
+                help="Delete role",
+                use_container_width=True,
+            ):
+                del st.session_state.roles[role_name]
+                st.rerun()
+
+    st.divider()
+    if st.button("➕ Add role", key="add_role_btn"):
+        new_name = _next_new_role_name()
+        st.session_state.roles[new_name] = {
+            "profession": PROFESSIONS[0],
+            "specialization": PROFESSION_TO_SPECS[PROFESSIONS[0]][0],
+            "tags": [],
+        }
+        edit_role_dialog(new_name)
+
+
+# ---------- Players tab ----------
+with tab_players:
+    _, _players_mid, _ = st.columns([1, 3, 1])
+
+with _players_mid:
+    st.caption(
+        "Click Edit to change a player in a popup: rename, reorder roles, add/remove roles."
+    )
+
+    PREVIEW_LIMIT = 8
+
+    for player_name in sorted(st.session_state.players.keys()):
+        player_roles = st.session_state.players[player_name]
+
+        outer_cols = st.columns([3, 12, 1, 1])
+        with outer_cols[0]:
+            st.markdown(f"**{player_name}**")
+        with outer_cols[1]:
+            preview = player_roles[:PREVIEW_LIMIT]
+            overflow = len(player_roles) - len(preview)
+            if preview or overflow > 0:
+                parts: list[str] = []
+                for rn in preview:
+                    url = _role_data_url(rn)
+                    if url:
+                        parts.append(
+                            f'<img src="{url}" '
+                            f'style="width:36px;height:36px;margin-right:2px;'
+                            f'vertical-align:middle;" alt="{rn}">'
+                        )
+                    else:
+                        parts.append(
+                            f'<span style="display:inline-block;width:36px;'
+                            f"height:36px;line-height:36px;text-align:center;"
+                            f"color:#888;font-size:10px;margin-right:2px;"
+                            f'vertical-align:middle;">{rn[:4]}</span>'
+                        )
+                if overflow > 0:
+                    parts.append(
+                        f'<span style="color:#888;vertical-align:middle;'
+                        f'margin-left:6px;">+{overflow} more</span>'
+                    )
+                st.markdown(
+                    "<div style='display:flex;align-items:center;'>"
+                    + "".join(parts)
+                    + "</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("(no roles)")
+        with outer_cols[2]:
+            if st.button(
+                "",
+                icon=":material/edit:",
+                key=f"edit_player_btn_{player_name}",
+                type="tertiary",
+                help="Edit player",
+                use_container_width=True,
+            ):
+                edit_player_dialog(player_name)
+        with outer_cols[3]:
+            if st.button(
+                "",
+                icon=":material/delete:",
+                key=f"del_player_inline_{player_name}",
+                type="tertiary",
+                help="Delete player",
+                use_container_width=True,
+            ):
+                del st.session_state.players[player_name]
+                st.rerun()
+
+    st.divider()
+    if st.button("➕ Add player", key="add_player_btn"):
+        new_name = _next_new_player_name()
+        st.session_state.players[new_name] = []
+        edit_player_dialog(new_name)
