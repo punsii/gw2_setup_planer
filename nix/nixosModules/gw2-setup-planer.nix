@@ -66,7 +66,7 @@ in
           ${pkgs.coreutils}/bin/mkdir -vp ${WorkingDirectory}/.streamlit
           cp -v ${StreamlitConfig} ${WorkingDirectory}/.streamlit/${StreamlitConfig.name}
           cd ${WorkingDirectory}
-          ${pkgs.nix}/bin/nix run "github:punsii/gw2_setup_planer/master"
+          ${pkgs.nix}/bin/nix run "github:punsii/gw2_setup_planer/main"
         '';
         wantedBy = [ "multi-user.target" ];
         requires = [ "network-online.target" ];
