@@ -4,7 +4,9 @@
 , ...
 }:
 let
-  WorkingDirectory = "/srv/gw2_setup_planer";
+  # Single dir holds the streamlit config (.streamlit/config.toml) and the
+  # SQLite DB. Created and chowned by systemd via StateDirectory below.
+  WorkingDirectory = "/var/lib/gw2-setup-planer";
   StreamlitConfig = pkgs.writeText "config.toml" ''
     [theme]
     base="dark"
@@ -69,11 +71,16 @@ in
         wantedBy = [ "multi-user.target" ];
         requires = [ "network-online.target" ];
         after = [ "network-online.target" ];
-        # StateDirectory creates and chowns /var/lib/gw2-setup-planer for the
-        # service, where storage.py drops its default SQLite DB file.
+        # DynamicUser: systemd allocates a transient unprivileged user just
+        # for this service. StateDirectory creates and chowns
+        # /var/lib/gw2-setup-planer for that user; that path is both the
+        # working dir AND the default DB location (storage.py's db_path()).
+        # CacheDirectory gives `nix run` a writable XDG cache location.
         serviceConfig = {
+          DynamicUser = true;
           StateDirectory = "gw2-setup-planer";
           StateDirectoryMode = "0750";
+          CacheDirectory = "gw2-setup-planer";
         };
       };
     };
