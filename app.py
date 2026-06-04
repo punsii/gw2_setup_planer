@@ -481,6 +481,8 @@ def _discord_emoji_for_role(role_name: str) -> str:
         return ""
     prof = role["profession"].lower()
     spec = role["specialization"].lower()
+    if prof == spec:
+        return f":{prof}_core:"
     return f":{prof}_{spec}:"
 
 
@@ -1032,8 +1034,7 @@ if "roles" not in st.session_state or "players" not in st.session_state:
         st.session_state.roles = deepcopy(DEFAULT_ROLES)
     if db_players:
         st.session_state.players = {
-            name: list(player.role_priorities)
-            for name, player in db_players.items()
+            name: list(player.role_priorities) for name, player in db_players.items()
         }
     else:
         st.session_state.players = deepcopy(DEFAULT_PLAYERS)
