@@ -163,6 +163,7 @@ PROFESSION_TO_SPECS: dict[Profession, list[Specialization]] = {
 
 class Role(BaseModel):
     """A named build assignment: profession + specialization + tags."""
+
     name: str
     profession: Profession
     specialization: Specialization
@@ -186,6 +187,7 @@ class Player(BaseModel):
     role_priorities holds role NAMES as strings (not Role objects) so a player
     list can keep orphan/custom role references that are not in the Role table.
     """
+
     name: str
     role_priorities: list[str] = Field(default_factory=list)
 
@@ -197,19 +199,20 @@ class Spot(BaseModel):
     assigned. Not persisted to the DB on its own; used as a serialisation
     shape for the future setup import / URL-share feature.
     """
+
     role: str | None = None
     player: str | None = None
 
 
 class Setup(BaseModel):
     """A full setup grid: list of groups, each group a list of Spots."""
+
     groups: list[list[Spot]] = Field(default_factory=list)
 
     # Matches the format emitted by tab_setup's "Copy/paste for Discord" code
     # block:  :profession_spec:`player name (padded)`
     _DISCORD_CELL = re.compile(
-        r":(?P<prof>[a-z]+)_(?P<spec>[a-z]+):`(?P<player>[^`]*)`"
-        r"|—\s*—|(?P<empty>—)"
+        r":(?P<prof>[a-z]+)_(?P<spec>[a-z]+):`(?P<player>[^`]*)`" r"|—\s*—|(?P<empty>—)"
     )
 
     @classmethod

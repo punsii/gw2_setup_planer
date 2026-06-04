@@ -50,9 +50,9 @@ nix run .#prod
 
 ## Configuration
 
-| Variable                  | Default                                          | Effect                                  |
-|---------------------------|--------------------------------------------------|-----------------------------------------|
-| `GW2_SETUP_PLANER_DB`     | `/var/lib/gw2-setup-planer/db.sqlite3` if writable, else `~/.local/share/gw2-setup-planer/db.sqlite3` | SQLite database location               |
+| Variable              | Default                                                                                               | Effect                   |
+| --------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------ |
+| `GW2_SETUP_PLANER_DB` | `/var/lib/gw2-setup-planer/db.sqlite3` if writable, else `~/.local/share/gw2-setup-planer/db.sqlite3` | SQLite database location |
 
 The DB is created on first launch and seeded with the hardcoded defaults
 from `app.py` (`DEFAULT_ROLES`, `DEFAULT_PLAYERS`, `DEFAULT_SETUP`). To wipe
@@ -81,6 +81,7 @@ host config and enable:
 ```
 
 What the module does:
+
 - Runs the streamlit app as a `systemd` service on port `14444`, under a
   transient `DynamicUser`.
 - Allocates `/var/lib/gw2-setup-planer/` (working dir + DB) and
@@ -118,7 +119,7 @@ The `:profession_spec:` token renders as the corresponding profession icon
 on a server that has those emojis (e.g. matching uploads from
 `assets/icons/`). The backticks wrap the padded player name as inline
 monospace so columns line up despite Discord's default proportional font.
-Cells are separated by ` | `; rows by newlines.
+Cells are separated by `|`; rows by newlines.
 
 ## License
 

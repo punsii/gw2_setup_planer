@@ -21,13 +21,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
-from models import (
-    Player,
-    Profession,
-    Role,
-    Specialization,
-    Tag,
-)
+from models import Player, Profession, Role, Specialization, Tag
 
 _ENV_VAR = "GW2_SETUP_PLANER_DB"
 
@@ -127,9 +121,7 @@ def load_all() -> tuple[dict[str, Role], dict[str, Player]]:
                 continue
             roles[role.name] = role
         players = {}
-        for row in c.execute(
-            "SELECT name, role_priorities_json FROM players"
-        ):
+        for row in c.execute("SELECT name, role_priorities_json FROM players"):
             try:
                 player = _row_to_player(row)
             except (ValueError, KeyError):
