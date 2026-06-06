@@ -4,8 +4,6 @@
 , ...
 }:
 let
-  # Single dir holds the streamlit config (.streamlit/config.toml) and the
-  # SQLite DB. Created and chowned by systemd via StateDirectory below.
   WorkingDirectory = "/var/lib/gw2-setup-planer";
   StreamlitConfig = pkgs.writeText "config.toml" ''
     [theme]
@@ -41,6 +39,13 @@ in
   };
 
   config = lib.mkIf config.gw2-setup-planer.enable {
+    users.users.gw2-setup-planer = {
+      isSystemUser = true;
+      group = "gw2-setup-planer";
+      description = "gw2-setup-planer service user";
+    };
+    users.groups.gw2-setup-planer = { };
+
     systemd.timers."gw2-setup-planer" = {
       wantedBy = [ "timers.target" ];
       timerConfig = {
@@ -71,20 +76,18 @@ in
         wantedBy = [ "multi-user.target" ];
         requires = [ "network-online.target" ];
         after = [ "network-online.target" ];
-        # DynamicUser: systemd allocates a transient unprivileged user just
-        # for this service. StateDirectory creates and chowns
-        # /var/lib/gw2-setup-planer for that user; that path is both the
-        # working dir AND the default DB location (storage.py's db_path()).
-        # CacheDirectory gives `nix run` a writable XDG cache location.
         serviceConfig = {
-          DynamicUser = true;
+          User = "gw2-setup-planer";
+          Group = "gw2-setup-planer";
           StateDirectory = "gw2-setup-planer";
           StateDirectoryMode = "0750";
           CacheDirectory = "gw2-setup-planer";
-          # nix run resolves its eval cache via $HOME/.cache/nix. Under
-          # DynamicUser $HOME defaults to /var/empty (read-only), so point
-          # it at the writable CacheDirectory instead. XDG_CACHE_HOME also
-          # set for any tool that prefers the XDG path.
+
+          NoNewPrivileges = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
+          PrivateTmp = true;
+
           Environment = [
             "HOME=/var/cache/gw2-setup-planer"
             "XDG_CACHE_HOME=/var/cache/gw2-setup-planer"
