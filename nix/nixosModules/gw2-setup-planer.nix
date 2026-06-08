@@ -69,7 +69,7 @@ in
         description = "Service for hosting the gw2 setup planer streamlit app";
         script = ''
           ${pkgs.coreutils}/bin/mkdir -vp ${WorkingDirectory}/.streamlit
-          cp -v ${StreamlitConfig} ${WorkingDirectory}/.streamlit/${StreamlitConfig.name}
+          cp -v --remove-destination ${StreamlitConfig} ${WorkingDirectory}/.streamlit/${StreamlitConfig.name}
           cd ${WorkingDirectory}
           ${pkgs.nix}/bin/nix run "github:punsii/gw2_setup_planer/main"
         '';
